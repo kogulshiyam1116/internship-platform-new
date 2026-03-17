@@ -7,15 +7,10 @@ export async function POST(request) {
   try {
     const { action, data } = await request.json()
     
-    // Get environment variables directly
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
     
-    console.log('🔧 Creating admin client with:', {
-      hasUrl: !!supabaseUrl,
-      hasKey: !!supabaseServiceKey,
-      url: supabaseUrl?.substring(0, 20)
-    })
+    console.log('🔧 Admin API called with action:', action)
 
     if (!supabaseUrl || !supabaseServiceKey) {
       return NextResponse.json(
@@ -24,7 +19,6 @@ export async function POST(request) {
       )
     }
 
-    // Create a fresh admin client for each request
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: {
         autoRefreshToken: false,
@@ -32,9 +26,8 @@ export async function POST(request) {
       }
     })
 
-    // Handle different actions
     if (action === 'createUser') {
-      const { email, password, full_name } = data
+      const { email, password, full_name, role = 'student', is_super_admin = false, admin_permissions = null } = data
       
       console.log('👤 Creating user:', email)
       
@@ -42,7 +35,12 @@ export async function POST(request) {
         email,
         password,
         email_confirm: true,
-        user_metadata: { full_name }
+        user_metadata: { 
+          full_name,
+          role,
+          is_super_admin,
+          admin_permissions
+        }
       })
 
       if (error) {
@@ -59,17 +57,109 @@ export async function POST(request) {
     if (action === 'deleteUser') {
       const { userId } = data
       
-      const { error } = await supabaseAdmin.auth.admin.deleteUser(userId)
-      
-      if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 })
+      if (!userId) {
+        return NextResponse.json(
+          { error: 'User ID is required' },
+          { status: 400 }
+        )
       }
-      
-      return NextResponse.json({ success: true })
+
+      console.log('🗑️ Starting cascade delete for user:', userId)
+
+      try {
+        // Step 1: Delete all submissions by this student
+        console.log('📝 Deleting submissions...')
+        const { error: submissionsError } = await supabaseAdmin
+          .from('submissions')
+          .delete()
+          .eq('student_id', userId)
+
+        if (submissionsError) {
+          console.error('❌ Error deleting submissions:', submissionsError)
+        } else {
+          console.log('✅ Submissions deleted')
+        }
+
+        // Step 2: Delete all task assignments for this student
+        console.log('📋 Deleting task assignments...')
+        const { error: assignmentsError } = await supabaseAdmin
+          .from('task_assignments')
+          .delete()
+          .eq('student_id', userId)
+
+        if (assignmentsError) {
+          console.error('❌ Error deleting task assignments:', assignmentsError)
+        } else {
+          console.log('✅ Task assignments deleted')
+        }
+
+        // Step 3: Delete all task timing records
+        console.log('⏱️ Deleting task timing records...')
+        const { error: timingError } = await supabaseAdmin
+          .from('task_timing')
+          .delete()
+          .eq('student_id', userId)
+
+        if (timingError) {
+          console.error('❌ Error deleting task timing:', timingError)
+        } else {
+          console.log('✅ Task timing records deleted')
+        }
+
+        // Step 4: Delete the profile
+        console.log('👤 Deleting profile...')
+        const { error: profileError } = await supabaseAdmin
+          .from('profiles')
+          .delete()
+          .eq('id', userId)
+
+        if (profileError) {
+          console.error('❌ Error deleting profile:', profileError)
+          return NextResponse.json(
+            { error: `Failed to delete profile: ${profileError.message}` },
+            { status: 500 }
+          )
+        }
+        console.log('✅ Profile deleted')
+
+        // Step 5: Finally, delete from auth
+        console.log('🔐 Deleting auth user...')
+        const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(userId)
+
+        if (authError) {
+          console.error('❌ Auth delete error:', authError)
+          return NextResponse.json(
+            { error: `Failed to delete auth user: ${authError.message}` },
+            { status: 500 }
+          )
+        }
+
+        console.log('✅ User completely deleted from system')
+        return NextResponse.json({
+          success: true,
+          message: 'User and all associated data deleted successfully'
+        })
+
+      } catch (deleteError) {
+        console.error('❌ Cascade delete error:', deleteError)
+        return NextResponse.json(
+          { error: `Database error deleting user: ${deleteError.message}` },
+          { status: 500 }
+        )
+      }
     }
 
     if (action === 'resetPassword') {
       const { userId, newPassword } = data
+      
+      if (!userId || !newPassword) {
+        return NextResponse.json(
+          { error: 'User ID and new password are required' },
+          { status: 400 }
+        )
+      }
+
+      console.log('🔑 Resetting password for user:', userId)
       
       const { error } = await supabaseAdmin.auth.admin.updateUserById(
         userId,
@@ -77,7 +167,11 @@ export async function POST(request) {
       )
       
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 400 })
+        console.error('❌ Reset password error:', error)
+        return NextResponse.json(
+          { error: error.message },
+          { status: 400 }
+        )
       }
       
       return NextResponse.json({ success: true })

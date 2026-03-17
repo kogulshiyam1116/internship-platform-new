@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase'
 import { emailService } from '@/lib/emailService'
 
-export default function StudentManager() {
+export default function StudentManager({ onStudentChange }) {
   const [students, setStudents] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
@@ -31,7 +31,7 @@ export default function StudentManager() {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
-        .eq('role', 'student')
+        .eq('role', 'student')  // Only fetch students, not admins
         .order('created_at', { ascending: false })
 
       if (error) throw error
@@ -73,7 +73,6 @@ export default function StudentManager() {
       [name]: value
     })
 
-    // Clear email error when user types new email
     if (name === 'email') {
       setEmailError('')
     }
@@ -92,7 +91,6 @@ export default function StudentManager() {
     })
   }
 
-  // Check if email already exists
   const checkEmailExists = async (email) => {
     try {
       const { data, error } = await supabase
@@ -114,14 +112,12 @@ export default function StudentManager() {
     setProcessing(true)
     setEmailError('')
 
-    // Validate passwords match
     if (formData.password !== formData.confirmPassword) {
       alert('Passwords do not match!')
       setProcessing(false)
       return
     }
 
-    // Validate password length
     if (formData.password.length < 6) {
       alert('Password must be at least 6 characters long!')
       setProcessing(false)
@@ -131,8 +127,6 @@ export default function StudentManager() {
     try {
       console.log('1️⃣ Adding student:', formData.email)
       
-      // Check if email already exists
-      console.log('2️⃣ Checking if email exists...')
       const emailExists = await checkEmailExists(formData.email)
       
       if (emailExists) {
@@ -142,9 +136,8 @@ export default function StudentManager() {
         return
       }
 
-      console.log('3️⃣ Email is available, creating user...')
+      console.log('2️⃣ Email is available, creating user...')
       
-      // Call API route
       const response = await fetch('/api/admin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -153,17 +146,17 @@ export default function StudentManager() {
           data: {
             email: formData.email,
             password: formData.password,
-            full_name: formData.full_name
+            full_name: formData.full_name,
+            role: 'student'  // Explicitly set role to student
           }
         })
       })
 
-      console.log('4️⃣ API response status:', response.status)
+      console.log('3️⃣ API response status:', response.status)
       const result = await response.json()
-      console.log('5️⃣ API response data:', result)
+      console.log('4️⃣ API response data:', result)
       
       if (!response.ok) {
-        // Check for specific error messages
         if (result.error?.includes('already exists') || 
             result.error?.includes('already registered') ||
             result.error?.includes('duplicate key')) {
@@ -173,21 +166,24 @@ export default function StudentManager() {
         throw new Error(result.error)
       }
 
-      // Update profile with full_name
-      console.log('6️⃣ Updating profile for user:', result.user.user.id)
+      // Update profile with full_name and ensure role is student
+      console.log('5️⃣ Updating profile for user:', result.user.user.id)
       const { error: profileError } = await supabase
         .from('profiles')
-        .update({ full_name: formData.full_name })
+        .update({ 
+          full_name: formData.full_name,
+          role: 'student'  // Ensure role is student
+        })
         .eq('id', result.user.user.id)
 
       if (profileError) {
-        console.error('7️⃣ Profile update error:', profileError)
+        console.error('6️⃣ Profile update error:', profileError)
         throw profileError
       }
-      console.log('7️⃣ Profile updated successfully')
+      console.log('6️⃣ Profile updated successfully')
 
       // Send welcome email
-      console.log('8️⃣ Sending welcome email to:', formData.email)
+      console.log('7️⃣ Sending welcome email to:', formData.email)
       await emailService.sendWelcomeEmail(
         formData.email,
         formData.full_name,
@@ -204,14 +200,17 @@ export default function StudentManager() {
       })
       setEmailError('')
       
-      console.log('9️⃣ Fetching updated student list')
+      console.log('8️⃣ Fetching updated student list')
       await fetchStudents()
-      console.log('🔟 Student list updated')
+      console.log('9️⃣ Student list updated')
+      
+      if (onStudentChange) {
+        onStudentChange()
+      }
       
     } catch (error) {
       console.error('❌ Error adding student:', error)
       
-      // User-friendly error messages
       if (error.message.includes('already exists')) {
         alert(`❌ User with email ${formData.email} already exists!`)
       } else if (error.message.includes('password')) {
@@ -268,56 +267,64 @@ export default function StudentManager() {
     }
   }
 
-  const handleDeleteStudent = async (student) => {
-    if (!confirm(`Are you sure you want to delete ${student.full_name || student.email}? This action cannot be undone.`)) {
-      return
-    }
 
-    try {
-      setProcessing(true)
-      
-      console.log('1️⃣ Deleting student:', student.id, student.email)
-      
-      const response = await fetch('/api/admin', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          action: 'deleteUser',
-          data: {
-            userId: student.id
-          }
-        })
-      })
-
-      console.log('2️⃣ Response status:', response.status)
-
-      if (!response.ok) {
-        const text = await response.text()
-        console.log('3️⃣ Error response:', text.substring(0, 200))
-        
-        try {
-          const errorJson = JSON.parse(text)
-          throw new Error(errorJson.error || `HTTP error ${response.status}`)
-        } catch (e) {
-          throw new Error(`Server error (${response.status})`)
-        }
+      const handleDeleteStudent = async (student) => {
+      if (!confirm(`Are you sure you want to delete student ${student.full_name || student.email}? This action cannot be undone.`)) {
+        return
       }
 
-      const result = await response.json()
-      console.log('4️⃣ Delete success:', result)
+      try {
+        setProcessing(true)
+        
+        console.log('1️⃣ Deleting student:', student.id, student.email)
+        
+        const response = await fetch('/api/admin', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            action: 'deleteUser',
+            data: {
+              userId: student.id
+            }
+          })
+        })
 
-      alert('✅ Student deleted successfully!')
-      fetchStudents()
-    } catch (error) {
-      console.error('❌ Error deleting student:', error)
-      alert('❌ Error deleting student: ' + error.message)
-    } finally {
-      setProcessing(false)
+        console.log('2️⃣ Response status:', response.status)
+        
+        const responseText = await response.text()
+        console.log('3️⃣ Response text:', responseText)
+
+        let result
+        try {
+          result = JSON.parse(responseText)
+        } catch (e) {
+          console.error('4️⃣ Failed to parse JSON:', responseText)
+          throw new Error(`Server returned: ${responseText.substring(0, 100)}`)
+        }
+
+        if (!response.ok) {
+          throw new Error(result.error || `Server error (${response.status})`)
+        }
+
+        console.log('5️⃣ Delete success:', result)
+        alert('✅ Student and all associated data deleted successfully!')
+        
+        await fetchStudents()
+        
+        if (onStudentChange) {
+          onStudentChange()
+        }
+        
+      } catch (error) {
+        console.error('❌ Error deleting student:', error)
+        alert('❌ Error deleting student: ' + error.message)
+      } finally {
+        setProcessing(false)
+      }
     }
-  }
 
   const handleResendWelcomeEmail = async (student) => {
     try {

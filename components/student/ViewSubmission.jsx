@@ -1,6 +1,12 @@
 'use client'
 
 export default function ViewSubmission({ submission, task, onClose }) {
+  const formatFileSize = (bytes) => {
+    if (!bytes) return ''
+    const mb = bytes / (1024 * 1024)
+    return mb.toFixed(2) + ' MB'
+  }
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -30,58 +36,60 @@ export default function ViewSubmission({ submission, task, onClose }) {
               </p>
             </div>
 
-            {/* Documentation Files */}
-            {submission.documentation_urls?.length > 0 && (
+            {/* Submitted ZIP File */}
+            {submission.submission_zip_url && (
               <div>
-                <h4 className="font-medium text-gray-700 mb-2">📎 Your Documents:</h4>
+                <h4 className="font-medium text-gray-700 mb-2 flex items-center gap-1">
+                  <svg className="w-5 h-5 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                  </svg>
+                  Your Submitted Work (ZIP)
+                </h4>
+                <div className="flex items-center gap-3 p-3 bg-yellow-50 rounded-lg border border-yellow-200">
+                  <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                  </svg>
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-gray-800">{submission.submission_zip_name}</p>
+                    {submission.submission_zip_size && (
+                      <p className="text-xs text-gray-500">Size: {formatFileSize(submission.submission_zip_size)}</p>
+                    )}
+                  </div>
+                  <a
+                    href={submission.submission_zip_url}
+                    download
+                    className="px-3 py-1 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 text-sm"
+                  >
+                    Download ZIP
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {/* Links Section - Fixed to display properly */}
+            {submission.links && submission.links.length > 0 && (
+              <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
+                <h4 className="font-medium text-purple-700 mb-3 flex items-center gap-1">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  Shared Links ({submission.links.length})
+                </h4>
                 <div className="space-y-2">
-                  {submission.documentation_urls.map((doc, idx) => (
-                    <a
-                      key={idx}
-                      href={doc.url || doc}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block p-2 bg-gray-50 rounded-lg hover:bg-gray-100"
-                    >
-                      {doc.name || `Document ${idx + 1}`}
-                    </a>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Screenshots */}
-            {submission.screenshots?.length > 0 && (
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">📸 Your Screenshots:</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  {submission.screenshots.map((url, idx) => (
-                    <img
-                      key={idx}
-                      src={url}
-                      alt={`Screenshot ${idx + 1}`}
-                      className="w-full h-32 object-cover rounded-lg"
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Links */}
-            {submission.links?.length > 0 && (
-              <div>
-                <h4 className="font-medium text-gray-700 mb-2">🔗 Your Links:</h4>
-                <div className="space-y-1">
                   {submission.links.map((link, idx) => (
-                    <a
-                      key={idx}
-                      href={link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="block text-blue-600 hover:underline"
-                    >
-                      {link}
-                    </a>
+                    <div key={idx} className="flex items-start gap-2">
+                      <svg className="w-4 h-4 text-purple-500 mt-1 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                      <a
+                        href={link}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline break-all text-sm flex-1"
+                      >
+                        {link}
+                      </a>
+                    </div>
                   ))}
                 </div>
               </div>

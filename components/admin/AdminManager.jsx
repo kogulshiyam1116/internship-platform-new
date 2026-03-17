@@ -8,6 +8,8 @@ export default function AdminManager() {
   const [admins, setAdmins] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAddForm, setShowAddForm] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [adminToDelete, setAdminToDelete] = useState(null)
   const [processing, setProcessing] = useState(false)
   const [currentUser, setCurrentUser] = useState(null)
   const [formData, setFormData] = useState({
@@ -62,7 +64,23 @@ export default function AdminManager() {
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target
-    if (name.startsWith('perm_')) {
+    
+    if (name === 'is_super_admin') {
+      // When super admin checkbox changes, auto-set permissions
+      setFormData({
+        ...formData,
+        is_super_admin: checked,
+        permissions: checked ? {
+          can_create_tasks: true,
+          can_manage_students: true,
+          can_manage_admins: true // Auto-enable for super admins
+        } : {
+          can_create_tasks: true,
+          can_manage_students: true,
+          can_manage_admins: false
+        }
+      })
+    } else if (name.startsWith('perm_')) {
       const permName = name.replace('perm_', '')
       setFormData({
         ...formData,
@@ -113,6 +131,9 @@ export default function AdminManager() {
     setProcessing(true)
 
     try {
+      // Use the permissions from formData (which are now auto-set for super admins)
+      const permissions = formData.permissions
+
       const response = await fetch('/api/admin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -124,7 +145,7 @@ export default function AdminManager() {
             full_name: formData.full_name,
             role: 'admin',
             is_super_admin: formData.is_super_admin,
-            admin_permissions: formData.permissions,
+            admin_permissions: permissions,
             created_by: currentUser.id
           }
         })
@@ -134,14 +155,14 @@ export default function AdminManager() {
       
       if (!response.ok) throw new Error(result.error)
 
-      // Update profile with admin data
       const { error: profileError } = await supabase
         .from('profiles')
         .update({ 
           full_name: formData.full_name,
           is_super_admin: formData.is_super_admin,
-          admin_permissions: formData.permissions,
-          created_by_admin: currentUser.id
+          admin_permissions: permissions,
+          created_by_admin: currentUser.id,
+          role: 'admin'
         })
         .eq('id', result.user.user.id)
 
@@ -187,9 +208,12 @@ export default function AdminManager() {
       return
     }
 
-    if (!confirm(`Are you sure you want to delete admin ${admin.full_name || admin.email}?`)) {
-      return
-    }
+    setAdminToDelete(admin)
+    setShowDeleteConfirm(true)
+  }
+
+  const confirmDeleteAdmin = async () => {
+    if (!adminToDelete) return
 
     try {
       setProcessing(true)
@@ -199,7 +223,7 @@ export default function AdminManager() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'deleteUser',
-          data: { userId: admin.id }
+          data: { userId: adminToDelete.id }
         })
       })
 
@@ -208,13 +232,15 @@ export default function AdminManager() {
         throw new Error(error.error)
       }
 
-      alert('Admin deleted successfully!')
+      alert(`✅ Admin ${adminToDelete.full_name || adminToDelete.email} deleted successfully!`)
       fetchAdmins()
     } catch (error) {
       console.error('Error deleting admin:', error)
-      alert('Error deleting admin: ' + error.message)
+      alert('❌ Error deleting admin: ' + error.message)
     } finally {
       setProcessing(false)
+      setShowDeleteConfirm(false)
+      setAdminToDelete(null)
     }
   }
 
@@ -229,7 +255,7 @@ export default function AdminManager() {
         {currentUser?.is_super_admin && (
           <button
             onClick={() => setShowAddForm(true)}
-            className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -304,6 +330,7 @@ export default function AdminManager() {
                     <button
                       onClick={() => handleDeleteAdmin(admin)}
                       className="text-red-600 hover:text-red-900"
+                      title="Delete admin"
                       disabled={processing}
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -334,6 +361,7 @@ export default function AdminManager() {
                     onChange={handleInputChange}
                     required
                     className="w-full px-3 py-2 border rounded-lg"
+                    placeholder="Enter admin name"
                   />
                 </div>
 
@@ -346,6 +374,7 @@ export default function AdminManager() {
                     onChange={handleInputChange}
                     required
                     className="w-full px-3 py-2 border rounded-lg"
+                    placeholder="admin@example.com"
                   />
                 </div>
 
@@ -359,6 +388,7 @@ export default function AdminManager() {
                       onChange={handleInputChange}
                       required
                       className="flex-1 px-3 py-2 border rounded-lg"
+                      placeholder="Enter password"
                     />
                     <button
                       type="button"
@@ -379,6 +409,7 @@ export default function AdminManager() {
                     onChange={handleInputChange}
                     required
                     className="w-full px-3 py-2 border rounded-lg"
+                    placeholder="Confirm password"
                   />
                 </div>
 
@@ -391,7 +422,7 @@ export default function AdminManager() {
                     className="w-4 h-4"
                   />
                   <label className="text-sm font-medium text-gray-700">
-                    Super Admin (can manage other admins)
+                    Super Admin (full access including managing other admins)
                   </label>
                 </div>
 
@@ -404,6 +435,7 @@ export default function AdminManager() {
                         name="perm_can_create_tasks"
                         checked={formData.permissions.can_create_tasks}
                         onChange={handleInputChange}
+                        disabled={formData.is_super_admin}
                         className="w-4 h-4"
                       />
                       <label className="text-sm text-gray-600">Can create tasks</label>
@@ -414,6 +446,7 @@ export default function AdminManager() {
                         name="perm_can_manage_students"
                         checked={formData.permissions.can_manage_students}
                         onChange={handleInputChange}
+                        disabled={formData.is_super_admin}
                         className="w-4 h-4"
                       />
                       <label className="text-sm text-gray-600">Can manage students</label>
@@ -424,10 +457,13 @@ export default function AdminManager() {
                         name="perm_can_manage_admins"
                         checked={formData.permissions.can_manage_admins}
                         onChange={handleInputChange}
+                        disabled={formData.is_super_admin}
                         className="w-4 h-4"
-                        disabled={!formData.is_super_admin}
                       />
-                      <label className="text-sm text-gray-600">Can manage admins</label>
+                      <label className="text-sm text-gray-600">Can manage other admins</label>
+                      {formData.is_super_admin && (
+                        <span className="text-xs text-purple-600 ml-2">(Auto-enabled for Super Admin)</span>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -436,7 +472,7 @@ export default function AdminManager() {
                   <button
                     type="submit"
                     disabled={processing}
-                    className="flex-1 bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700"
+                    className="flex-1 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700"
                   >
                     {processing ? 'Adding...' : 'Add Admin'}
                   </button>
@@ -449,6 +485,35 @@ export default function AdminManager() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Admin Confirmation Modal */}
+      {showDeleteConfirm && adminToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-800 mb-2">Delete Admin</h3>
+            <p className="text-gray-600 mb-4">
+              Are you sure you want to delete admin "{adminToDelete.full_name || adminToDelete.email}"?
+            </p>
+            <p className="text-sm text-red-500 mb-4">
+              This action cannot be undone. The admin will be permanently removed.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={confirmDeleteAdmin}
+                className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
+              >
+                Delete Admin
+              </button>
+              <button
+                onClick={() => setShowDeleteConfirm(false)}
+                className="flex-1 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

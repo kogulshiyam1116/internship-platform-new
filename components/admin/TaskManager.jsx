@@ -34,7 +34,7 @@ export default function TaskManager() {
     group_id: '',
     working_duration: 7,
     use_holiday_calendar: true,
-    documentation_files: [],
+    zip_files: [], // Changed to zip_files
     reference_links: [{ url: '', description: '' }],
     readme_content: ''
   })
@@ -93,7 +93,6 @@ export default function TaskManager() {
       if (error) throw error
       setTaskGroups(data || [])
       
-      // Initialize expanded state for all groups
       const expanded = {}
       data?.forEach(group => {
         expanded[group.id] = true
@@ -166,19 +165,33 @@ export default function TaskManager() {
     }
   }
 
-  const handleFileUpload = async (files, folder) => {
-    const uploadedUrls = []
+  // ZIP file upload function
+  const handleZipUpload = async (files) => {
+    const uploadedZips = []
     
     for (const file of files) {
       try {
-        const fileExt = file.name.split('.').pop()
-        const fileName = `${Date.now()}-${Math.random().toString(36).substring(7)}.${fileExt}`
-        const filePath = `${folder}/${fileName}`
+        // Validate file is ZIP
+        if (!file.name.toLowerCase().endsWith('.zip')) {
+          alert(`File ${file.name} is not a ZIP file. Please upload only ZIP files.`)
+          continue
+        }
+
+        // Check file size (max 100MB)
+        if (file.size > 100 * 1024 * 1024) {
+          alert(`File ${file.name} is too large. Maximum size is 100MB.`)
+          continue
+        }
+
+        const fileName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.-]/g, '_')}`
+        const filePath = `task-zips/${fileName}`
+
+        console.log('📤 Uploading ZIP:', file.name, 'Size:', (file.size / 1024 / 1024).toFixed(2), 'MB')
 
         const fileOptions = {
           cacheControl: '3600',
           upsert: false,
-          contentType: file.type || (fileExt === 'pdf' ? 'application/pdf' : 'application/octet-stream')
+          contentType: 'application/zip'
         }
 
         const { error: uploadError } = await supabase.storage
@@ -194,21 +207,23 @@ export default function TaskManager() {
         const baseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
         const directUrl = `${baseUrl}/storage/v1/object/public/task-documents/${filePath}`
 
-        uploadedUrls.push({
+        uploadedZips.push({
           url: publicUrl,
           directUrl: directUrl,
           path: filePath,
           name: file.name,
-          type: file.type,
-          isPdf: file.type === 'application/pdf' || fileExt === 'pdf'
+          size: file.size,
+          uploadedAt: new Date().toISOString()
         })
+
+        console.log('✅ ZIP uploaded:', file.name)
       } catch (error) {
-        console.error('Error uploading file:', error)
+        console.error('❌ Error uploading ZIP:', error)
         throw error
       }
     }
     
-    return uploadedUrls
+    return uploadedZips
   }
 
   const handleInputChange = (e) => {
@@ -219,18 +234,31 @@ export default function TaskManager() {
     })
   }
 
-  const handleGroupInputChange = (e) => {
-    const { name, value } = e.target
-    setGroupFormData({
-      ...groupFormData,
-      [name]: value
-    })
+  const handleZipChange = async (e) => {
+    const files = Array.from(e.target.files)
+    setUploading(true)
+    
+    try {
+      const uploadedZips = await handleZipUpload(files)
+      setFormData({
+        ...formData,
+        zip_files: [...formData.zip_files, ...uploadedZips]
+      })
+      alert(`✅ ${uploadedZips.length} ZIP file(s) uploaded successfully!`)
+    } catch (error) {
+      console.error('Error uploading ZIPs:', error)
+      alert('Error uploading ZIP files: ' + error.message)
+    } finally {
+      setUploading(false)
+    }
   }
 
-  const handleDocumentationChange = (e) => {
+  const removeZipFile = (index) => {
+    const newZips = [...formData.zip_files]
+    newZips.splice(index, 1)
     setFormData({
       ...formData,
-      documentation_files: Array.from(e.target.files)
+      zip_files: newZips
     })
   }
 
@@ -295,13 +323,11 @@ export default function TaskManager() {
 
     setLoading(true)
     try {
-      // First, update all tasks in this group to remove group_id
       await supabase
         .from('tasks')
         .update({ group_id: null })
         .eq('group_id', group.id)
 
-      // Then soft delete the group
       const { error } = await supabase
         .from('task_groups')
         .update({ is_active: false })
@@ -330,16 +356,10 @@ export default function TaskManager() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       
-      // Get max display order for the group
       const groupTasks = tasks.filter(t => t.group_id === formData.group_id)
       const maxOrder = groupTasks.length > 0 
         ? Math.max(...groupTasks.map(t => t.display_order || 0)) 
         : 0
-
-      let documentationUrls = []
-      if (formData.documentation_files.length > 0) {
-        documentationUrls = await handleFileUpload(formData.documentation_files, 'documentation')
-      }
 
       const reference_links = formData.reference_links.filter(link => link.url.trim() !== '')
 
@@ -351,7 +371,7 @@ export default function TaskManager() {
           group_id: formData.group_id || null,
           working_duration: formData.working_duration,
           use_holiday_calendar: formData.use_holiday_calendar,
-          documentation_urls: documentationUrls,
+          zip_files: formData.zip_files, // Store ZIP files
           reference_links,
           readme_content: formData.readme_content,
           created_by: user.id,
@@ -370,7 +390,7 @@ export default function TaskManager() {
         group_id: '',
         working_duration: 7,
         use_holiday_calendar: true,
-        documentation_files: [],
+        zip_files: [],
         reference_links: [{ url: '', description: '' }],
         readme_content: ''
       })
@@ -397,6 +417,7 @@ export default function TaskManager() {
           group_id: formData.group_id,
           working_duration: formData.working_duration,
           use_holiday_calendar: formData.use_holiday_calendar,
+          zip_files: formData.zip_files,
           reference_links: formData.reference_links.filter(link => link.url.trim() !== ''),
           readme_content: formData.readme_content,
           status: formData.status
@@ -423,18 +444,15 @@ export default function TaskManager() {
     const destinationGroup = result.destination.droppableId
     const taskId = result.draggableId
 
-    // Get all tasks in the source and destination groups
     const sourceTasks = tasks
       .filter(t => t.group_id === sourceGroup && !t.is_deleted)
       .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
 
     if (sourceGroup === destinationGroup) {
-      // Reordering within same group
       const reorderedTasks = Array.from(sourceTasks)
       const [removed] = reorderedTasks.splice(result.source.index, 1)
       reorderedTasks.splice(result.destination.index, 0, removed)
 
-      // Update display_order for all tasks in the group
       const updates = reorderedTasks.map((task, index) => ({
         id: task.id,
         display_order: index + 1
@@ -447,12 +465,10 @@ export default function TaskManager() {
           .eq('id', update.id)
       }
     } else {
-      // Moving to different group
       const destinationTasks = tasks
         .filter(t => t.group_id === destinationGroup && !t.is_deleted)
         .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
 
-      // Update the moved task's group and order
       await supabase
         .from('tasks')
         .update({ 
@@ -461,7 +477,6 @@ export default function TaskManager() {
         })
         .eq('id', taskId)
 
-      // Update orders in destination group
       const updatedDestinationTasks = [...destinationTasks]
       updatedDestinationTasks.splice(result.destination.index, 0, { id: taskId })
       
@@ -547,95 +562,88 @@ export default function TaskManager() {
     }
   }
 
+  const handleMultiAssign = async (e) => {
+    e.preventDefault()
+    setLoading(true)
 
-    const handleMultiAssign = async (e) => {
-      e.preventDefault()
-      setLoading(true)
+    try {
+      const { data: { user }, error: userError } = await supabase.auth.getUser()
+      
+      if (userError) throw userError
+      if (!user) throw new Error('No authenticated user found')
 
-      try {
-        const { data: { user }, error: userError } = await supabase.auth.getUser()
-        
-        if (userError) throw userError
-        if (!user) throw new Error('No authenticated user found')
-
-        if (multiAssignmentData.task_ids.length === 0) {
-          throw new Error('Please select at least one task')
-        }
-
-        // Start from the base start date
-        let currentDate = new Date(multiAssignmentData.start_date)
-        const assignments = []
-        const taskDetails = []
-
-        // Process tasks SEQUENTIALLY in the order they were selected
-        for (const taskId of multiAssignmentData.task_ids) {
-          const task = tasks.find(t => t.id === taskId)
-          
-          // Calculate deadline based on CURRENT date (which advances with each task)
-          let deadline = new Date(currentDate)
-          
-          if (task.use_holiday_calendar) {
-            deadline = await holidayService.calculateSubmissionDate(
-              currentDate, 
-              task.working_duration
-            )
-          } else {
-            deadline.setDate(deadline.getDate() + task.working_duration)
-          }
-
-          assignments.push({
-            task_id: taskId,
-            student_id: multiAssignmentData.student_id,
-            assigned_by: user.id,
-            deadline: deadline.toISOString(),
-            admin_notes: multiAssignmentData.admin_notes || null,
-            status: 'pending',
-            task_deleted: false
-          })
-
-          taskDetails.push({
-            title: task.title,
-            deadline: deadline.toLocaleDateString(),
-            duration: task.working_duration
-          })
-
-          // Next task starts after this task's deadline + 1 day buffer
-          currentDate = new Date(deadline)
-          currentDate.setDate(currentDate.getDate() + 1) // Add 1 day gap between tasks
-        }
-
-        const { error: insertError } = await supabase
-          .from('task_assignments')
-          .insert(assignments)
-
-        if (insertError) throw insertError
-
-        const student = students.find(s => s.id === multiAssignmentData.student_id)
-        
-        // Show detailed summary with sequential deadlines
-        let summary = '\n'
-        taskDetails.forEach((detail, index) => {
-          summary += `${index + 1}. ${detail.title} (${detail.duration} days): ${detail.deadline}\n`
-        })
-        
-        alert(`✅ Successfully assigned ${assignments.length} tasks to ${student?.full_name || student?.email}!\n${summary}`)
-        
-        setShowMultiAssignForm(false)
-        setSelectedTasks([])
-        setMultiAssignmentData({
-          student_id: '',
-          admin_notes: '',
-          start_date: new Date().toISOString().split('T')[0],
-          task_ids: []
-        })
-        
-      } catch (error) {
-        console.error('Error in multi-task assignment:', error)
-        alert('Error assigning tasks: ' + error.message)
-      } finally {
-        setLoading(false)
+      if (multiAssignmentData.task_ids.length === 0) {
+        throw new Error('Please select at least one task')
       }
+
+      let currentDate = new Date(multiAssignmentData.start_date)
+      const assignments = []
+      const taskDetails = []
+
+      for (const taskId of multiAssignmentData.task_ids) {
+        const task = tasks.find(t => t.id === taskId)
+        
+        let deadline = new Date(currentDate)
+        if (task.use_holiday_calendar) {
+          deadline = await holidayService.calculateSubmissionDate(
+            currentDate, 
+            task.working_duration
+          )
+        } else {
+          deadline.setDate(deadline.getDate() + task.working_duration)
+        }
+
+        assignments.push({
+          task_id: taskId,
+          student_id: multiAssignmentData.student_id,
+          assigned_by: user.id,
+          deadline: deadline.toISOString(),
+          admin_notes: multiAssignmentData.admin_notes || null,
+          status: 'pending',
+          task_deleted: false
+        })
+
+        taskDetails.push({
+          title: task.title,
+          deadline: deadline.toLocaleDateString(),
+          duration: task.working_duration
+        })
+
+        currentDate = new Date(deadline)
+        currentDate.setDate(currentDate.getDate() + 1)
+      }
+
+      const { error: insertError } = await supabase
+        .from('task_assignments')
+        .insert(assignments)
+
+      if (insertError) throw insertError
+
+      const student = students.find(s => s.id === multiAssignmentData.student_id)
+      
+      let summary = '\n'
+      taskDetails.forEach((detail, index) => {
+        summary += `${index + 1}. ${detail.title} (${detail.duration} days): ${detail.deadline}\n`
+      })
+      
+      alert(`✅ Successfully assigned ${assignments.length} tasks to ${student?.full_name || student?.email}!\n${summary}`)
+      
+      setShowMultiAssignForm(false)
+      setSelectedTasks([])
+      setMultiAssignmentData({
+        student_id: '',
+        admin_notes: '',
+        start_date: new Date().toISOString().split('T')[0],
+        task_ids: []
+      })
+      
+    } catch (error) {
+      console.error('Error in multi-task assignment:', error)
+      alert('Error assigning tasks: ' + error.message)
+    } finally {
+      setLoading(false)
     }
+  }
 
   const handleSoftDelete = async (task) => {
     setTaskToDelete(task);
@@ -749,7 +757,7 @@ export default function TaskManager() {
       group_id: task.group_id || '',
       working_duration: task.working_duration || 7,
       use_holiday_calendar: task.use_holiday_calendar !== false,
-      documentation_files: [],
+      zip_files: task.zip_files || [],
       reference_links: task.reference_links || [{ url: '', description: '' }],
       readme_content: task.readme_content || '',
       status: task.status
@@ -853,7 +861,6 @@ export default function TaskManager() {
         </div>
       </div>
 
-      {/* Show Deleted Toggle */}
       <div className="flex justify-between items-center mb-4">
         <div className="flex items-center gap-2">
           <label className="text-sm text-gray-600">Show deleted tasks:</label>
@@ -872,9 +879,7 @@ export default function TaskManager() {
         </div>
       </div>
 
-      {/* Drag & Drop Context */}
       <DragDropContext onDragEnd={handleDragEnd}>
-        {/* Tasks by Group */}
         <div className="space-y-6">
           {taskGroups.map(group => {
             const groupTasks = tasks
@@ -991,30 +996,25 @@ export default function TaskManager() {
                                       )}
                                     </div>
 
-                                    {/* Documentation Files */}
-                                    {task.documentation_urls?.length > 0 && (
+                                    {/* ZIP Files Display */}
+                                    {task.zip_files?.length > 0 && (
                                       <div className="mb-2">
-                                        <p className="text-xs font-medium text-gray-700 mb-1">📎 Documents:</p>
+                                        <p className="text-xs font-medium text-gray-700 mb-1">📦 Resource ZIP Files:</p>
                                         <div className="flex flex-wrap gap-2">
-                                          {task.documentation_urls.map((doc, idx) => {
-                                            const fileData = typeof doc === 'string' ? { url: doc } : doc;
-                                            const fileUrl = fileData.url || fileData.directUrl || fileData;
-                                            const fileName = fileData.name || `Document ${idx + 1}`;
-                                            
-                                            return (
-                                              <a
-                                                key={idx}
-                                                href={fileUrl}
-                                                target="_blank"
-                                                className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 flex items-center gap-1"
-                                              >
-                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                                                </svg>
-                                                {fileName}
-                                              </a>
-                                            );
-                                          })}
+                                          {task.zip_files.map((zip, idx) => (
+                                            <a
+                                              key={idx}
+                                              href={zip.url || zip.directUrl}
+                                              download
+                                              className="text-xs px-2 py-1 bg-yellow-50 text-yellow-700 rounded hover:bg-yellow-100 flex items-center gap-1 border border-yellow-200"
+                                              title={`Size: ${(zip.size / 1024 / 1024).toFixed(2)} MB`}
+                                            >
+                                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                                              </svg>
+                                              {zip.name}
+                                            </a>
+                                          ))}
                                         </div>
                                       </div>
                                     )}
@@ -1064,7 +1064,6 @@ export default function TaskManager() {
             )
           })}
 
-          {/* Ungrouped Tasks Droppable */}
           {tasks.filter(t => !t.group_id && !t.is_deleted).length > 0 && (
             <div className="border rounded-lg overflow-hidden">
               <div 
@@ -1117,19 +1116,7 @@ export default function TaskManager() {
                                     className="mt-1 w-4 h-4"
                                   />
                                   <div className="flex-1">
-                                    <div className="flex items-center gap-3 mb-2">
-                                      <h4 className="font-medium text-gray-800">{task.title}</h4>
-                                      <select
-                                        value={task.status}
-                                        onChange={(e) => handleStatusChange(task.id, e.target.value)}
-                                        className={`px-2 py-1 rounded-full text-xs font-medium border-0 ${
-                                          task.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                                        }`}
-                                      >
-                                        <option value="active">Active</option>
-                                        <option value="archived">Archived</option>
-                                      </select>
-                                    </div>
+                                    <h4 className="font-medium text-gray-800 mb-2">{task.title}</h4>
                                     <p className="text-sm text-gray-600 mb-2">{task.description}</p>
                                     <div className="flex gap-2 mt-2">
                                       <button
@@ -1142,22 +1129,10 @@ export default function TaskManager() {
                                         Assign
                                       </button>
                                       <button
-                                        onClick={() => fetchTaskAssignments(task.id)}
-                                        className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                                      >
-                                        View
-                                      </button>
-                                      <button
                                         onClick={() => openEditTask(task)}
                                         className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
                                       >
                                         Edit
-                                      </button>
-                                      <button
-                                        onClick={() => handleSoftDelete(task)}
-                                        className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-                                      >
-                                        Delete
                                       </button>
                                     </div>
                                   </div>
@@ -1380,24 +1355,52 @@ export default function TaskManager() {
                   />
                 </div>
 
+                {/* ZIP Files Upload */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Attach Documents (PDF, Images, etc.)
+                    Upload Resource ZIP Files (Max 100MB each)
                   </label>
                   <input
                     type="file"
                     multiple
-                    onChange={handleDocumentationChange}
+                    accept=".zip"
+                    onChange={handleZipChange}
                     className="w-full px-3 py-2 border rounded-lg"
-                    accept=".pdf,.doc,.docx,.txt,.md,.jpg,.jpeg,.png"
+                    disabled={loading || uploading}
                   />
-                  {formData.documentation_files.length > 0 && (
-                    <p className="text-sm text-gray-500 mt-1">
-                      {formData.documentation_files.length} file(s) selected
-                    </p>
+                  {uploading && (
+                    <p className="text-sm text-blue-600 mt-1">Uploading ZIP files...</p>
+                  )}
+                  
+                  {/* Display uploaded ZIPs */}
+                  {formData.zip_files.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-700">Uploaded ZIPs:</p>
+                      {formData.zip_files.map((zip, index) => (
+                        <div key={index} className="flex items-center justify-between bg-gray-50 p-2 rounded-lg">
+                          <div className="flex items-center gap-2">
+                            <svg className="w-4 h-4 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                            </svg>
+                            <span className="text-sm text-gray-700">{zip.name}</span>
+                            <span className="text-xs text-gray-500">
+                              ({(zip.size / 1024 / 1024).toFixed(2)} MB)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeZipFile(index)}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
 
+                {/* Reference Links with Descriptions */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Reference Links</label>
                   {formData.reference_links.map((link, index) => (
@@ -1426,7 +1429,7 @@ export default function TaskManager() {
                         value={link.description}
                         onChange={(e) => handleReferenceLinkChange(index, 'description', e.target.value)}
                         className="w-full px-3 py-2 border rounded-lg"
-                        placeholder="What is this link for? (e.g., 'Official Documentation', 'Tutorial Video')"
+                        placeholder="What is this link for?"
                       />
                     </div>
                   ))}
@@ -1549,6 +1552,27 @@ export default function TaskManager() {
                     className="w-full px-3 py-2 border rounded-lg"
                   />
                 </div>
+
+                {/* ZIP Files Display (Read-only in edit) */}
+                {formData.zip_files?.length > 0 && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Resource ZIP Files</label>
+                    <div className="space-y-2">
+                      {formData.zip_files.map((zip, index) => (
+                        <div key={index} className="flex items-center gap-2 bg-gray-50 p-2 rounded-lg">
+                          <svg className="w-4 h-4 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                          </svg>
+                          <span className="text-sm text-gray-700">{zip.name}</span>
+                          <span className="text-xs text-gray-500">
+                            ({(zip.size / 1024 / 1024).toFixed(2)} MB)
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">To add new ZIP files, use the task creation form.</p>
+                  </div>
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Reference Links</label>
@@ -1726,29 +1750,27 @@ export default function TaskManager() {
                 <button onClick={() => setShowMultiAssignForm(false)} className="text-gray-500 hover:text-gray-700">✕</button>
               </div>
 
+              <div className="mb-4 p-3 bg-purple-50 rounded-lg">
+                <p className="text-sm text-purple-800">
+                  📋 Assigning <strong>{selectedTasks.length}</strong> tasks to one student
+                </p>
+                <p className="text-xs text-purple-600 mt-1">
+                  ⏱️ Tasks will be assigned sequentially. Each task starts after the previous task's deadline.
+                </p>
+              </div>
 
-                <div className="mb-4">
-                  <p className="text-sm text-gray-700">
-                    📋 Assigning <strong>{selectedTasks.length}</strong> tasks to one student
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    ⏱️ Tasks will be completed sequentially. Each task starts after the previous one's deadline.
-                  </p>
-                </div>
-
-
-              {/* Selected Tasks List with Durations */}
+              {/* Selected Tasks List */}
               <div className="mb-4 border rounded-lg p-3 bg-gray-50">
-                <h4 className="text-sm font-medium text-gray-700 mb-2">Selected Tasks:</h4>
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Selected Tasks (in this order):</h4>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {selectedTasks.map(taskId => {
+                  {selectedTasks.map((taskId, index) => {
                     const task = tasks.find(t => t.id === taskId)
                     if (!task) return null
                     
                     return (
                       <div key={taskId} className="flex items-center justify-between text-sm bg-white p-2 rounded border">
-                        <span className="text-gray-800 truncate max-w-xs" title={task.title}>
-                          {task.title}
+                        <span className="text-gray-800">
+                          {index + 1}. {task.title}
                         </span>
                         <div className="flex items-center gap-3">
                           <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-full">
@@ -1793,46 +1815,38 @@ export default function TaskManager() {
                     required
                     className="w-full px-3 py-2 border rounded-lg"
                   />
-                  <p className="text-xs text-gray-500 mt-1">
-                    All tasks will start on this date, but deadlines will vary based on each task's duration.
-                  </p>
                 </div>
 
-                {/* Example Deadline Preview */}
-              {/* Example Deadline Preview */}
-              {multiAssignmentData.start_date && multiAssignmentData.student_id && (
-                <div className="bg-green-50 p-3 rounded-lg">
-                  <p className="text-xs font-medium text-green-700 mb-2">📅 Individual Deadlines (Each task calculated separately):</p>
-                  <div className="space-y-1 text-xs">
-                    {selectedTasks.map((taskId, index) => {
-                      const task = tasks.find(t => t.id === taskId)
-                      if (!task) return null
-                      
-                      // Calculate sequential deadlines for preview
-                      let previewDate = new Date(multiAssignmentData.start_date)
-                      
-                      // Add durations of all previous tasks
-                      for (let i = 0; i < index; i++) {
-                        const prevTask = tasks.find(t => t.id === selectedTasks[i])
-                        if (prevTask) {
-                          previewDate.setDate(previewDate.getDate() + prevTask.working_duration + 1) // +1 for buffer
+                {/* Sequential Deadline Preview */}
+                {multiAssignmentData.start_date && multiAssignmentData.student_id && (
+                  <div className="bg-green-50 p-3 rounded-lg">
+                    <p className="text-xs font-medium text-green-700 mb-2">📅 Sequential Deadlines:</p>
+                    <div className="space-y-1 text-xs">
+                      {selectedTasks.map((taskId, index) => {
+                        const task = tasks.find(t => t.id === taskId)
+                        if (!task) return null
+                        
+                        let previewDate = new Date(multiAssignmentData.start_date)
+                        for (let i = 0; i < index; i++) {
+                          const prevTask = tasks.find(t => t.id === selectedTasks[i])
+                          if (prevTask) {
+                            previewDate.setDate(previewDate.getDate() + prevTask.working_duration + 1)
+                          }
                         }
-                      }
-                      
-                      // Add current task's duration
-                      const deadline = new Date(previewDate)
-                      deadline.setDate(deadline.getDate() + task.working_duration)
-                      
-                      return (
-                        <div key={taskId} className="flex justify-between text-green-600">
-                          <span className="truncate max-w-xs">{task.title}:</span>
-                          <span className="font-medium">{deadline.toLocaleDateString()}</span>
-                        </div>
-                      )
-                    })}
+                        
+                        const deadline = new Date(previewDate)
+                        deadline.setDate(deadline.getDate() + task.working_duration)
+                        
+                        return (
+                          <div key={taskId} className="flex justify-between text-green-600">
+                            <span>{index + 1}. {task.title}:</span>
+                            <span className="font-medium">{deadline.toLocaleDateString()}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Common Notes for All Tasks</label>
@@ -1843,16 +1857,6 @@ export default function TaskManager() {
                     className="w-full px-3 py-2 border rounded-lg"
                     placeholder="These notes will apply to all assigned tasks..."
                   />
-                </div>
-
-                <div className="text-xs text-gray-500 mt-2">
-                  <p>⚠️ Tasks will be completed in sequence. Task 2 starts after Task 1's deadline + 1 day buffer.</p>
-                  {selectedTasks.some(t => {
-                    const task = tasks.find(task => task.id === t)
-                    return task?.use_holiday_calendar
-                  }) && (
-                    <p className="mt-1">📅 Tasks with holiday calendar exclude Sri Lanka public holidays and Poya days.</p>
-                  )}
                 </div>
 
                 <div className="flex gap-2 pt-4">
