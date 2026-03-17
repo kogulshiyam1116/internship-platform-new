@@ -218,8 +218,35 @@ export default function TaskCard({ assignment, task, onTaskUpdate }) {
     }
   };
 
-  // Debug log to see what's in task.reference_links
-  console.log('Task reference_links:', task?.reference_links);
+  // Helper function to parse link data
+  const parseLink = (link) => {
+    try {
+      if (typeof link === 'object' && link !== null) {
+        return {
+          url: link.url || '',
+          description: link.description || ''
+        };
+      }
+      
+      if (typeof link === 'string') {
+        if (link.trim().startsWith('{') && link.trim().endsWith('}')) {
+          const parsed = JSON.parse(link);
+          return {
+            url: parsed.url || '',
+            description: parsed.description || ''
+          };
+        }
+        return {
+          url: link,
+          description: ''
+        };
+      }
+    } catch (e) {
+      console.error('Error parsing link:', e);
+    }
+    
+    return { url: '', description: '' };
+  };
 
   return (
     <>
@@ -301,6 +328,12 @@ export default function TaskCard({ assignment, task, onTaskUpdate }) {
               <p className="text-xs text-green-500 mt-1">
                 Status: {existingSubmission.status}
               </p>
+              {existingSubmission.admin_feedback && (
+                <div className="mt-2 p-2 bg-red-50 rounded border border-red-200">
+                  <p className="text-xs font-medium text-red-700">Admin Feedback:</p>
+                  <p className="text-xs text-red-600">{existingSubmission.admin_feedback}</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -378,8 +411,7 @@ export default function TaskCard({ assignment, task, onTaskUpdate }) {
             </div>
           )}
 
-          {/* Reference Links - FIXED SECTION */}
-         {/* Reference Links - FIXED VERSION */}
+          {/* Reference Links - FIXED VERSION */}
           {task.reference_links && task.reference_links.length > 0 && (
             <div className="mt-4 p-4 bg-purple-50 rounded-lg border border-purple-200">
               <div className="flex items-center gap-2 mb-3">
@@ -394,38 +426,12 @@ export default function TaskCard({ assignment, task, onTaskUpdate }) {
               
               <div className="space-y-3">
                 {task.reference_links.map((link, index) => {
-                  // Parse the link data
-                  let url = '';
-                  let description = '';
+                  const { url, description } = parseLink(link);
                   
-                  try {
-                    // If it's a string, try to parse as JSON
-                    if (typeof link === 'string') {
-                      // Check if it looks like JSON
-                      if (link.trim().startsWith('{') && link.trim().endsWith('}')) {
-                        const parsed = JSON.parse(link);
-                        url = parsed.url || '';
-                        description = parsed.description || '';
-                      } else {
-                        // Plain URL
-                        url = link;
-                      }
-                    } 
-                    // If it's already an object
-                    else if (typeof link === 'object' && link !== null) {
-                      url = link.url || '';
-                      description = link.description || '';
-                    }
-                  } catch (e) {
-                    console.error('Error parsing link:', e);
-                    url = link;
-                  }
-                  
-                  // Don't render if no URL
                   if (!url) return null;
                   
                   return (
-                    <div key={index} className="bg-white p-3 rounded-lg border border-purple-100">
+                    <div key={index} className="bg-white p-3 rounded-lg border border-purple-100 hover:border-purple-300 transition-colors">
                       <a
                         href={url}
                         target="_blank"
@@ -487,6 +493,7 @@ export default function TaskCard({ assignment, task, onTaskUpdate }) {
         <SubmissionForm
           task={task}
           assignment={assignment}
+          existingSubmission={existingSubmission}
           onClose={() => setShowSubmission(false)}
           onSubmit={() => {
             setShowSubmission(false)

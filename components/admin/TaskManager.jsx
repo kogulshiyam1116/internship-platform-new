@@ -234,6 +234,16 @@ export default function TaskManager() {
     })
   }
 
+  // Add this function - it's missing!
+  const handleGroupInputChange = (e) => {
+    const { name, value } = e.target
+    setGroupFormData({
+      ...groupFormData,
+      [name]: value
+    })
+  }
+
+
   const handleZipChange = async (e) => {
     const files = Array.from(e.target.files)
     setUploading(true)
@@ -799,6 +809,8 @@ export default function TaskManager() {
       [groupId]: !prev[groupId]
     }))
   }
+
+  
 
   const openMultiAssign = () => {
     if (selectedTasks.length === 0) {
