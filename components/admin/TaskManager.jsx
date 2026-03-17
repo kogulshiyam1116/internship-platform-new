@@ -3,19 +3,23 @@
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase'
 import { holidayService } from '@/lib/holidayService'
+import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd'
 
 export default function TaskManager() {
   const [tasks, setTasks] = useState([])
   const [students, setStudents] = useState([])
   const [taskGroups, setTaskGroups] = useState([])
   const [showTaskForm, setShowTaskForm] = useState(false)
+  const [showGroupForm, setShowGroupForm] = useState(false)
   const [showAssignForm, setShowAssignForm] = useState(false)
   const [showMultiAssignForm, setShowMultiAssignForm] = useState(false)
   const [showViewAssignments, setShowViewAssignments] = useState(false)
   const [showEditTask, setShowEditTask] = useState(false)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [showDeleteGroupConfirm, setShowDeleteGroupConfirm] = useState(false)
   const [selectedTask, setSelectedTask] = useState(null)
   const [selectedTasks, setSelectedTasks] = useState([])
+  const [groupToDelete, setGroupToDelete] = useState(null)
   const [taskToDelete, setTaskToDelete] = useState(null)
   const [taskAssignments, setTaskAssignments] = useState([])
   const [loading, setLoading] = useState(true)
@@ -33,6 +37,11 @@ export default function TaskManager() {
     documentation_files: [],
     reference_links: [{ url: '', description: '' }],
     readme_content: ''
+  })
+
+  const [groupFormData, setGroupFormData] = useState({
+    name: '',
+    description: ''
   })
   
   const [assignmentData, setAssignmentData] = useState({
@@ -83,6 +92,14 @@ export default function TaskManager() {
       
       if (error) throw error
       setTaskGroups(data || [])
+      
+      // Initialize expanded state for all groups
+      const expanded = {}
+      data?.forEach(group => {
+        expanded[group.id] = true
+      })
+      expanded['ungrouped'] = true
+      setExpandedGroups(expanded)
     } catch (error) {
       console.error('Error fetching task groups:', error)
     }
@@ -96,6 +113,7 @@ export default function TaskManager() {
           *,
           task_groups (name, description)
         `)
+        .order('display_order', { ascending: true })
         .order('created_at', { ascending: false });
       
       if (!showDeletedTasks) {
@@ -201,6 +219,14 @@ export default function TaskManager() {
     })
   }
 
+  const handleGroupInputChange = (e) => {
+    const { name, value } = e.target
+    setGroupFormData({
+      ...groupFormData,
+      [name]: value
+    })
+  }
+
   const handleDocumentationChange = (e) => {
     setFormData({
       ...formData,
@@ -232,6 +258,70 @@ export default function TaskManager() {
     })
   }
 
+  const handleCreateGroup = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      
+      const { error } = await supabase
+        .from('task_groups')
+        .insert([{
+          name: groupFormData.name,
+          description: groupFormData.description || null,
+          created_by: user.id,
+          is_active: true
+        }])
+
+      if (error) throw error
+
+      alert('Task group created successfully!')
+      setShowGroupForm(false)
+      setGroupFormData({ name: '', description: '' })
+      fetchTaskGroups()
+    } catch (error) {
+      console.error('Error creating group:', error)
+      alert('Error creating group: ' + error.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeleteGroup = async (group) => {
+    if (!confirm(`Are you sure you want to delete group "${group.name}"? Tasks in this group will become ungrouped.`)) {
+      return
+    }
+
+    setLoading(true)
+    try {
+      // First, update all tasks in this group to remove group_id
+      await supabase
+        .from('tasks')
+        .update({ group_id: null })
+        .eq('group_id', group.id)
+
+      // Then soft delete the group
+      const { error } = await supabase
+        .from('task_groups')
+        .update({ is_active: false })
+        .eq('id', group.id)
+
+      if (error) throw error
+
+      alert('Group deleted successfully!')
+      fetchTaskGroups()
+      fetchTasks()
+    } catch (error) {
+      console.error('Error deleting group:', error)
+      alert('Error deleting group: ' + error.message)
+    } finally {
+      setLoading(false)
+      setShowDeleteGroupConfirm(false)
+      setGroupToDelete(null)
+    }
+  }
+
   const handleCreateTask = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -240,6 +330,12 @@ export default function TaskManager() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       
+      // Get max display order for the group
+      const groupTasks = tasks.filter(t => t.group_id === formData.group_id)
+      const maxOrder = groupTasks.length > 0 
+        ? Math.max(...groupTasks.map(t => t.display_order || 0)) 
+        : 0
+
       let documentationUrls = []
       if (formData.documentation_files.length > 0) {
         documentationUrls = await handleFileUpload(formData.documentation_files, 'documentation')
@@ -260,7 +356,8 @@ export default function TaskManager() {
           readme_content: formData.readme_content,
           created_by: user.id,
           status: 'active',
-          is_deleted: false
+          is_deleted: false,
+          display_order: maxOrder + 1
         }])
 
       if (error) throw error
@@ -317,6 +414,67 @@ export default function TaskManager() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleDragEnd = async (result) => {
+    if (!result.destination) return
+
+    const sourceGroup = result.source.droppableId
+    const destinationGroup = result.destination.droppableId
+    const taskId = result.draggableId
+
+    // Get all tasks in the source and destination groups
+    const sourceTasks = tasks
+      .filter(t => t.group_id === sourceGroup && !t.is_deleted)
+      .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
+
+    if (sourceGroup === destinationGroup) {
+      // Reordering within same group
+      const reorderedTasks = Array.from(sourceTasks)
+      const [removed] = reorderedTasks.splice(result.source.index, 1)
+      reorderedTasks.splice(result.destination.index, 0, removed)
+
+      // Update display_order for all tasks in the group
+      const updates = reorderedTasks.map((task, index) => ({
+        id: task.id,
+        display_order: index + 1
+      }))
+
+      for (const update of updates) {
+        await supabase
+          .from('tasks')
+          .update({ display_order: update.display_order })
+          .eq('id', update.id)
+      }
+    } else {
+      // Moving to different group
+      const destinationTasks = tasks
+        .filter(t => t.group_id === destinationGroup && !t.is_deleted)
+        .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
+
+      // Update the moved task's group and order
+      await supabase
+        .from('tasks')
+        .update({ 
+          group_id: destinationGroup === 'ungrouped' ? null : destinationGroup,
+          display_order: result.destination.index + 1
+        })
+        .eq('id', taskId)
+
+      // Update orders in destination group
+      const updatedDestinationTasks = [...destinationTasks]
+      updatedDestinationTasks.splice(result.destination.index, 0, { id: taskId })
+      
+      for (let i = 0; i < updatedDestinationTasks.length; i++) {
+        if (updatedDestinationTasks[i].id === taskId) continue
+        await supabase
+          .from('tasks')
+          .update({ display_order: i + 1 })
+          .eq('id', updatedDestinationTasks[i].id)
+      }
+    }
+
+    fetchTasks()
   }
 
   const handleAssignTask = async (e) => {
@@ -389,83 +547,95 @@ export default function TaskManager() {
     }
   }
 
-  const handleMultiAssign = async (e) => {
-    e.preventDefault()
-    setLoading(true)
 
-    try {
-      const { data: { user }, error: userError } = await supabase.auth.getUser()
-      
-      if (userError) throw userError
-      if (!user) throw new Error('No authenticated user found')
+    const handleMultiAssign = async (e) => {
+      e.preventDefault()
+      setLoading(true)
 
-      if (multiAssignmentData.task_ids.length === 0) {
-        throw new Error('Please select at least one task')
-      }
-
-      const startDate = new Date(multiAssignmentData.start_date)
-      const assignments = []
-      const taskDetails = []
-
-      for (const taskId of multiAssignmentData.task_ids) {
-        const task = tasks.find(t => t.id === taskId)
+      try {
+        const { data: { user }, error: userError } = await supabase.auth.getUser()
         
-        let deadline = new Date(startDate)
-        if (task.use_holiday_calendar) {
-          deadline = await holidayService.calculateSubmissionDate(
-            startDate, 
-            task.working_duration
-          )
-        } else {
-          deadline.setDate(deadline.getDate() + task.working_duration)
+        if (userError) throw userError
+        if (!user) throw new Error('No authenticated user found')
+
+        if (multiAssignmentData.task_ids.length === 0) {
+          throw new Error('Please select at least one task')
         }
 
-        assignments.push({
-          task_id: taskId,
-          student_id: multiAssignmentData.student_id,
-          assigned_by: user.id,
-          deadline: deadline.toISOString(),
-          admin_notes: multiAssignmentData.admin_notes || null,
-          status: 'pending',
-          task_deleted: false
-        })
+        // Start from the base start date
+        let currentDate = new Date(multiAssignmentData.start_date)
+        const assignments = []
+        const taskDetails = []
 
-        taskDetails.push({
-          title: task.title,
-          deadline: deadline.toLocaleDateString()
+        // Process tasks SEQUENTIALLY in the order they were selected
+        for (const taskId of multiAssignmentData.task_ids) {
+          const task = tasks.find(t => t.id === taskId)
+          
+          // Calculate deadline based on CURRENT date (which advances with each task)
+          let deadline = new Date(currentDate)
+          
+          if (task.use_holiday_calendar) {
+            deadline = await holidayService.calculateSubmissionDate(
+              currentDate, 
+              task.working_duration
+            )
+          } else {
+            deadline.setDate(deadline.getDate() + task.working_duration)
+          }
+
+          assignments.push({
+            task_id: taskId,
+            student_id: multiAssignmentData.student_id,
+            assigned_by: user.id,
+            deadline: deadline.toISOString(),
+            admin_notes: multiAssignmentData.admin_notes || null,
+            status: 'pending',
+            task_deleted: false
+          })
+
+          taskDetails.push({
+            title: task.title,
+            deadline: deadline.toLocaleDateString(),
+            duration: task.working_duration
+          })
+
+          // Next task starts after this task's deadline + 1 day buffer
+          currentDate = new Date(deadline)
+          currentDate.setDate(currentDate.getDate() + 1) // Add 1 day gap between tasks
+        }
+
+        const { error: insertError } = await supabase
+          .from('task_assignments')
+          .insert(assignments)
+
+        if (insertError) throw insertError
+
+        const student = students.find(s => s.id === multiAssignmentData.student_id)
+        
+        // Show detailed summary with sequential deadlines
+        let summary = '\n'
+        taskDetails.forEach((detail, index) => {
+          summary += `${index + 1}. ${detail.title} (${detail.duration} days): ${detail.deadline}\n`
         })
+        
+        alert(`✅ Successfully assigned ${assignments.length} tasks to ${student?.full_name || student?.email}!\n${summary}`)
+        
+        setShowMultiAssignForm(false)
+        setSelectedTasks([])
+        setMultiAssignmentData({
+          student_id: '',
+          admin_notes: '',
+          start_date: new Date().toISOString().split('T')[0],
+          task_ids: []
+        })
+        
+      } catch (error) {
+        console.error('Error in multi-task assignment:', error)
+        alert('Error assigning tasks: ' + error.message)
+      } finally {
+        setLoading(false)
       }
-
-      const { error: insertError } = await supabase
-        .from('task_assignments')
-        .insert(assignments)
-
-      if (insertError) throw insertError
-
-      const student = students.find(s => s.id === multiAssignmentData.student_id)
-      
-      // Show summary of assignments with deadlines
-      const summary = taskDetails.slice(0, 3).map(t => `\n• ${t.title}: ${t.deadline}`).join('')
-      const more = taskDetails.length > 3 ? `\n...and ${taskDetails.length - 3} more tasks` : ''
-      
-      alert(`✅ Successfully assigned ${assignments.length} tasks to ${student?.full_name || student?.email}!${summary}${more}`)
-      
-      setShowMultiAssignForm(false)
-      setSelectedTasks([])
-      setMultiAssignmentData({
-        student_id: '',
-        admin_notes: '',
-        start_date: new Date().toISOString().split('T')[0],
-        task_ids: []
-      })
-      
-    } catch (error) {
-      console.error('Error in multi-task assignment:', error)
-      alert('Error assigning tasks: ' + error.message)
-    } finally {
-      setLoading(false)
     }
-  }
 
   const handleSoftDelete = async (task) => {
     setTaskToDelete(task);
@@ -643,11 +813,20 @@ export default function TaskManager() {
       <div className="flex justify-between items-center mb-6">
         <h2 className="text-xl font-semibold text-gray-800">Task Management</h2>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowGroupForm(true)}
+            className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            New Group
+          </button>
           {selectedTasks.length > 0 && (
             <>
               <button
                 onClick={openMultiAssign}
-                className="bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 flex items-center gap-2"
+                className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 flex items-center gap-2"
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -658,7 +837,7 @@ export default function TaskManager() {
                 onClick={clearTaskSelection}
                 className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600"
               >
-                Clear Selection
+                Clear
               </button>
             </>
           )}
@@ -669,7 +848,7 @@ export default function TaskManager() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            Create New Task
+            New Task
           </button>
         </div>
       </div>
@@ -693,249 +872,392 @@ export default function TaskManager() {
         </div>
       </div>
 
-      {/* Tasks by Group */}
-      <div className="space-y-6">
-        {taskGroups.map(group => {
-          const groupTasks = tasks.filter(t => t.group_id === group.id && !t.is_deleted)
-          if (groupTasks.length === 0) return null
-          
-          const isExpanded = expandedGroups[group.id] !== false
-          
-          return (
-            <div key={group.id} className="border rounded-lg overflow-hidden">
-              <div 
-                className="bg-gray-50 px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-gray-100"
-                onClick={() => toggleGroupExpand(group.id)}
-              >
-                <div className="flex items-center gap-3">
-                  <svg className={`w-5 h-5 text-gray-500 transform transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                  <h3 className="font-semibold text-gray-800">{group.name}</h3>
-                  <span className="text-sm text-gray-500">{groupTasks.length} tasks</span>
+      {/* Drag & Drop Context */}
+      <DragDropContext onDragEnd={handleDragEnd}>
+        {/* Tasks by Group */}
+        <div className="space-y-6">
+          {taskGroups.map(group => {
+            const groupTasks = tasks
+              .filter(t => t.group_id === group.id && !t.is_deleted)
+              .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
+            
+            if (groupTasks.length === 0) return null
+            
+            const isExpanded = expandedGroups[group.id] !== false
+            
+            return (
+              <div key={group.id} className="border rounded-lg overflow-hidden">
+                <div 
+                  className="bg-gray-50 px-4 py-3 flex items-center justify-between cursor-pointer hover:bg-gray-100"
+                  onClick={() => toggleGroupExpand(group.id)}
+                >
+                  <div className="flex items-center gap-3">
+                    <svg className={`w-5 h-5 text-gray-500 transform transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <h3 className="font-semibold text-gray-800">{group.name}</h3>
+                    <span className="text-sm text-gray-500">{groupTasks.length} tasks</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {isExpanded && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          selectAllTasksInGroup(group.id)
+                        }}
+                        className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
+                      >
+                        Select All
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setGroupToDelete(group)
+                        setShowDeleteGroupConfirm(true)
+                      }}
+                      className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded hover:bg-red-200"
+                    >
+                      Delete Group
+                    </button>
+                  </div>
                 </div>
+                
                 {isExpanded && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      selectAllTasksInGroup(group.id)
-                    }}
-                    className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded hover:bg-blue-200"
-                  >
-                    Select All in Group
-                  </button>
+                  <Droppable droppableId={group.id}>
+                    {(provided) => (
+                      <div
+                        {...provided.droppableProps}
+                        ref={provided.innerRef}
+                        className="p-4 space-y-2 min-h-[100px]"
+                      >
+                        {groupTasks.map((task, index) => (
+                          <Draggable key={task.id} draggableId={task.id} index={index}>
+                            {(provided, snapshot) => (
+                              <div
+                                ref={provided.innerRef}
+                                {...provided.draggableProps}
+                                className={`bg-white p-4 rounded-lg border ${
+                                  snapshot.isDragging ? 'border-blue-500 shadow-lg' : 'border-gray-200'
+                                } hover:shadow-md transition-shadow`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div
+                                    {...provided.dragHandleProps}
+                                    className="mt-1 cursor-move text-gray-400 hover:text-gray-600"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                    </svg>
+                                  </div>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTasks.includes(task.id)}
+                                    onChange={() => toggleTaskSelection(task.id)}
+                                    className="mt-1 w-4 h-4"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-3 mb-2">
+                                      <h4 className="font-medium text-gray-800">{task.title}</h4>
+                                      <select
+                                        value={task.status}
+                                        onChange={(e) => handleStatusChange(task.id, e.target.value)}
+                                        className={`px-2 py-1 rounded-full text-xs font-medium border-0 ${
+                                          task.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                                        }`}
+                                      >
+                                        <option value="active">Active</option>
+                                        <option value="archived">Archived</option>
+                                      </select>
+                                    </div>
+                                    
+                                    <p className="text-sm text-gray-600 mb-2">{task.description}</p>
+                                    
+                                    <div className="flex items-center gap-4 text-xs text-gray-500 mb-3">
+                                      <span className="flex items-center gap-1">
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        {task.working_duration} working days
+                                      </span>
+                                      {task.use_holiday_calendar && (
+                                        <span className="flex items-center gap-1" title="Excludes Sri Lanka holidays">
+                                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                          </svg>
+                                          Excluding holidays
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {/* Documentation Files */}
+                                    {task.documentation_urls?.length > 0 && (
+                                      <div className="mb-2">
+                                        <p className="text-xs font-medium text-gray-700 mb-1">📎 Documents:</p>
+                                        <div className="flex flex-wrap gap-2">
+                                          {task.documentation_urls.map((doc, idx) => {
+                                            const fileData = typeof doc === 'string' ? { url: doc } : doc;
+                                            const fileUrl = fileData.url || fileData.directUrl || fileData;
+                                            const fileName = fileData.name || `Document ${idx + 1}`;
+                                            
+                                            return (
+                                              <a
+                                                key={idx}
+                                                href={fileUrl}
+                                                target="_blank"
+                                                className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 flex items-center gap-1"
+                                              >
+                                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                                                </svg>
+                                                {fileName}
+                                              </a>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    )}
+
+                                    {/* Action Buttons */}
+                                    <div className="flex gap-2 mt-3">
+                                      <button
+                                        onClick={() => {
+                                          setSelectedTask(task)
+                                          setShowAssignForm(true)
+                                        }}
+                                        className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+                                      >
+                                        Assign
+                                      </button>
+                                      <button
+                                        onClick={() => fetchTaskAssignments(task.id)}
+                                        className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                      >
+                                        View
+                                      </button>
+                                      <button
+                                        onClick={() => openEditTask(task)}
+                                        className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        onClick={() => handleSoftDelete(task)}
+                                        className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </Draggable>
+                        ))}
+                        {provided.placeholder}
+                      </div>
+                    )}
+                  </Droppable>
                 )}
               </div>
+            )
+          })}
+
+          {/* Ungrouped Tasks Droppable */}
+          {tasks.filter(t => !t.group_id && !t.is_deleted).length > 0 && (
+            <div className="border rounded-lg overflow-hidden">
+              <div 
+                className="bg-gray-50 px-4 py-3 flex items-center cursor-pointer hover:bg-gray-100"
+                onClick={() => toggleGroupExpand('ungrouped')}
+              >
+                <svg className={`w-5 h-5 text-gray-500 mr-2 transform transition-transform ${expandedGroups.ungrouped ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                <h3 className="font-semibold text-gray-800">Ungrouped Tasks</h3>
+                <span className="ml-2 text-sm text-gray-500">
+                  {tasks.filter(t => !t.group_id && !t.is_deleted).length} tasks
+                </span>
+              </div>
               
-              {isExpanded && (
-                <div className="p-4 space-y-4">
-                  {groupTasks.map(task => (
-                    <div key={task.id} className="bg-white p-4 rounded-lg border border-gray-200 hover:shadow-md transition-shadow">
-                      <div className="flex items-start gap-3">
-                        <input
-                          type="checkbox"
-                          checked={selectedTasks.includes(task.id)}
-                          onChange={() => toggleTaskSelection(task.id)}
-                          className="mt-1 w-4 h-4"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-2">
-                            <h4 className="font-medium text-gray-800">{task.title}</h4>
-                            <select
-                              value={task.status}
-                              onChange={(e) => handleStatusChange(task.id, e.target.value)}
-                              className={`px-2 py-1 rounded-full text-xs font-medium border-0 ${
-                                task.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                              }`}
-                            >
-                              <option value="active">Active</option>
-                              <option value="archived">Archived</option>
-                            </select>
-                          </div>
-                          
-                          <p className="text-sm text-gray-600 mb-2">{task.description}</p>
-                          
-                          <div className="flex items-center gap-4 text-xs text-gray-500 mb-3">
-                            <span className="flex items-center gap-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              {task.working_duration} working days
-                            </span>
-                            {task.use_holiday_calendar && (
-                              <span className="flex items-center gap-1" title="Excludes Sri Lanka holidays">
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                </svg>
-                                Excluding holidays
-                              </span>
-                            )}
-                          </div>
-
-                          {/* Documentation Files */}
-                          {task.documentation_urls?.length > 0 && (
-                            <div className="mb-2">
-                              <p className="text-xs font-medium text-gray-700 mb-1">📎 Documents:</p>
-                              <div className="flex flex-wrap gap-2">
-                                {task.documentation_urls.map((doc, idx) => {
-                                  const fileData = typeof doc === 'string' ? { url: doc } : doc;
-                                  const fileUrl = fileData.url || fileData.directUrl || fileData;
-                                  const fileName = fileData.name || `Document ${idx + 1}`;
-                                  
-                                  return (
-                                    <a
-                                      key={idx}
-                                      href={fileUrl}
-                                      target="_blank"
-                                      className="text-xs px-2 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 flex items-center gap-1"
-                                    >
-                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                                      </svg>
-                                      {fileName}
-                                    </a>
-                                  );
-                                })}
+              {expandedGroups.ungrouped && (
+                <Droppable droppableId="ungrouped">
+                  {(provided) => (
+                    <div
+                      {...provided.droppableProps}
+                      ref={provided.innerRef}
+                      className="p-4 space-y-2 min-h-[100px]"
+                    >
+                      {tasks
+                        .filter(t => !t.group_id && !t.is_deleted)
+                        .sort((a, b) => (a.display_order || 0) - (b.display_order || 0))
+                        .map((task, index) => (
+                          <Draggable key={task.id} draggableId={task.id} index={index}>
+                            {(provided, snapshot) => (
+                              <div
+                                ref={provided.innerRef}
+                                {...provided.draggableProps}
+                                className={`bg-white p-4 rounded-lg border ${
+                                  snapshot.isDragging ? 'border-blue-500 shadow-lg' : 'border-gray-200'
+                                } hover:shadow-md transition-shadow`}
+                              >
+                                <div className="flex items-start gap-3">
+                                  <div
+                                    {...provided.dragHandleProps}
+                                    className="mt-1 cursor-move text-gray-400 hover:text-gray-600"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8h16M4 16h16" />
+                                    </svg>
+                                  </div>
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedTasks.includes(task.id)}
+                                    onChange={() => toggleTaskSelection(task.id)}
+                                    className="mt-1 w-4 h-4"
+                                  />
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-3 mb-2">
+                                      <h4 className="font-medium text-gray-800">{task.title}</h4>
+                                      <select
+                                        value={task.status}
+                                        onChange={(e) => handleStatusChange(task.id, e.target.value)}
+                                        className={`px-2 py-1 rounded-full text-xs font-medium border-0 ${
+                                          task.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                                        }`}
+                                      >
+                                        <option value="active">Active</option>
+                                        <option value="archived">Archived</option>
+                                      </select>
+                                    </div>
+                                    <p className="text-sm text-gray-600 mb-2">{task.description}</p>
+                                    <div className="flex gap-2 mt-2">
+                                      <button
+                                        onClick={() => {
+                                          setSelectedTask(task)
+                                          setShowAssignForm(true)
+                                        }}
+                                        className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
+                                      >
+                                        Assign
+                                      </button>
+                                      <button
+                                        onClick={() => fetchTaskAssignments(task.id)}
+                                        className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
+                                      >
+                                        View
+                                      </button>
+                                      <button
+                                        onClick={() => openEditTask(task)}
+                                        className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        onClick={() => handleSoftDelete(task)}
+                                        className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                          )}
-
-                          {/* Action Buttons */}
-                          <div className="flex gap-2 mt-3">
-                            <button
-                              onClick={() => {
-                                setSelectedTask(task)
-                                setShowAssignForm(true)
-                              }}
-                              className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-1"
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                              </svg>
-                              Assign
-                            </button>
-                            <button
-                              onClick={() => fetchTaskAssignments(task.id)}
-                              className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
-                              View
-                            </button>
-                            <button
-                              onClick={() => openEditTask(task)}
-                              className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-1"
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                              </svg>
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => handleSoftDelete(task)}
-                              className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700 flex items-center gap-1"
-                            >
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                              </svg>
-                              Delete
-                            </button>
-                          </div>
-                        </div>
-                      </div>
+                            )}
+                          </Draggable>
+                        ))}
+                      {provided.placeholder}
                     </div>
-                  ))}
-                </div>
+                  )}
+                </Droppable>
               )}
             </div>
-          )
-        })}
+          )}
+        </div>
+      </DragDropContext>
 
-        {/* Ungrouped Tasks */}
-        {tasks.filter(t => !t.group_id && !t.is_deleted).length > 0 && (
-          <div className="border rounded-lg overflow-hidden">
-            <div 
-              className="bg-gray-50 px-4 py-3 flex items-center cursor-pointer hover:bg-gray-100"
-              onClick={() => toggleGroupExpand('ungrouped')}
-            >
-              <svg className={`w-5 h-5 text-gray-500 mr-2 transform transition-transform ${expandedGroups.ungrouped ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
-              <h3 className="font-semibold text-gray-800">Ungrouped Tasks</h3>
-              <span className="ml-2 text-sm text-gray-500">
-                {tasks.filter(t => !t.group_id && !t.is_deleted).length} tasks
-              </span>
+      {/* Create Group Modal */}
+      {showGroupForm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-md">
+            <div className="p-6">
+              <h3 className="text-lg font-semibold mb-4">Create New Task Group</h3>
+              <form onSubmit={handleCreateGroup} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Group Name *</label>
+                  <input
+                    type="text"
+                    name="name"
+                    value={groupFormData.name}
+                    onChange={handleGroupInputChange}
+                    required
+                    className="w-full px-3 py-2 border rounded-lg"
+                    placeholder="e.g., Embedded Wizard, NXP Board, etc."
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Description (Optional)</label>
+                  <textarea
+                    name="description"
+                    value={groupFormData.description}
+                    onChange={handleGroupInputChange}
+                    rows="3"
+                    className="w-full px-3 py-2 border rounded-lg"
+                    placeholder="Brief description of this task group..."
+                  />
+                </div>
+                <div className="flex gap-2 pt-4">
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="flex-1 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700"
+                  >
+                    {loading ? 'Creating...' : 'Create Group'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowGroupForm(false)}
+                    className="flex-1 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </form>
             </div>
-            
-            {expandedGroups.ungrouped && (
-              <div className="p-4 space-y-4">
-                {tasks.filter(t => !t.group_id && !t.is_deleted).map(task => (
-                  <div key={task.id} className="bg-white p-4 rounded-lg border border-gray-200">
-                    <div className="flex items-start gap-3">
-                      <input
-                        type="checkbox"
-                        checked={selectedTasks.includes(task.id)}
-                        onChange={() => toggleTaskSelection(task.id)}
-                        className="mt-1 w-4 h-4"
-                      />
-                      <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
-                          <h4 className="font-medium text-gray-800">{task.title}</h4>
-                          <select
-                            value={task.status}
-                            onChange={(e) => handleStatusChange(task.id, e.target.value)}
-                            className={`px-2 py-1 rounded-full text-xs font-medium border-0 ${
-                              task.status === 'active' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                            }`}
-                          >
-                            <option value="active">Active</option>
-                            <option value="archived">Archived</option>
-                          </select>
-                        </div>
-                        <p className="text-sm text-gray-600 mb-2">{task.description}</p>
-                        <div className="flex gap-2 mt-2">
-                          <button
-                            onClick={() => {
-                              setSelectedTask(task)
-                              setShowAssignForm(true)
-                            }}
-                            className="text-xs px-3 py-1 bg-green-600 text-white rounded hover:bg-green-700"
-                          >
-                            Assign
-                          </button>
-                          <button
-                            onClick={() => fetchTaskAssignments(task.id)}
-                            className="text-xs px-3 py-1 bg-blue-600 text-white rounded hover:bg-blue-700"
-                          >
-                            View
-                          </button>
-                          <button
-                            onClick={() => openEditTask(task)}
-                            className="text-xs px-3 py-1 bg-purple-600 text-white rounded hover:bg-purple-700"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleSoftDelete(task)}
-                            className="text-xs px-3 py-1 bg-red-600 text-white rounded hover:bg-red-700"
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* Delete Confirmation Modal */}
+      {/* Delete Group Confirmation Modal */}
+      {showDeleteGroupConfirm && groupToDelete && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md">
+            <h3 className="text-lg font-semibold text-gray-800 mb-2">Delete Group</h3>
+            <p className="text-gray-600 mb-4">
+              Are you sure you want to delete group "{groupToDelete.name}"?
+            </p>
+            <p className="text-sm text-gray-500 mb-4">
+              Tasks in this group will become ungrouped but will not be deleted.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => handleDeleteGroup(groupToDelete)}
+                className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700"
+              >
+                Delete Group
+              </button>
+              <button
+                onClick={() => setShowDeleteGroupConfirm(false)}
+                className="flex-1 bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Task Confirmation Modal */}
       {showDeleteConfirm && taskToDelete && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-6 max-w-md">
@@ -1404,14 +1726,16 @@ export default function TaskManager() {
                 <button onClick={() => setShowMultiAssignForm(false)} className="text-gray-500 hover:text-gray-700">✕</button>
               </div>
 
-              <div className="mb-4 p-3 bg-purple-50 rounded-lg">
-                <p className="text-sm text-purple-800">
-                  📋 Assigning <strong>{selectedTasks.length}</strong> tasks to one student
-                </p>
-                <p className="text-xs text-purple-600 mt-1">
-                  Each task will keep its own duration. Deadlines will be calculated from the start date.
-                </p>
-              </div>
+
+                <div className="mb-4">
+                  <p className="text-sm text-gray-700">
+                    📋 Assigning <strong>{selectedTasks.length}</strong> tasks to one student
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">
+                    ⏱️ Tasks will be completed sequentially. Each task starts after the previous one's deadline.
+                  </p>
+                </div>
+
 
               {/* Selected Tasks List with Durations */}
               <div className="mb-4 border rounded-lg p-3 bg-gray-50">
@@ -1475,31 +1799,40 @@ export default function TaskManager() {
                 </div>
 
                 {/* Example Deadline Preview */}
-                {multiAssignmentData.start_date && multiAssignmentData.student_id && (
-                  <div className="bg-green-50 p-3 rounded-lg">
-                    <p className="text-xs font-medium text-green-700 mb-2">📅 Example Deadlines:</p>
-                    <div className="space-y-1 text-xs">
-                      {selectedTasks.slice(0, 3).map(taskId => {
-                        const task = tasks.find(t => t.id === taskId)
-                        if (!task) return null
-                        
-                        const startDate = new Date(multiAssignmentData.start_date)
-                        const deadline = new Date(startDate)
-                        deadline.setDate(deadline.getDate() + task.working_duration)
-                        
-                        return (
-                          <div key={taskId} className="flex justify-between text-green-600">
-                            <span className="truncate max-w-xs">{task.title}:</span>
-                            <span className="font-medium">{deadline.toLocaleDateString()}</span>
-                          </div>
-                        )
-                      })}
-                      {selectedTasks.length > 3 && (
-                        <p className="text-green-500 italic">...and {selectedTasks.length - 3} more tasks</p>
-                      )}
-                    </div>
+              {/* Example Deadline Preview */}
+              {multiAssignmentData.start_date && multiAssignmentData.student_id && (
+                <div className="bg-green-50 p-3 rounded-lg">
+                  <p className="text-xs font-medium text-green-700 mb-2">📅 Individual Deadlines (Each task calculated separately):</p>
+                  <div className="space-y-1 text-xs">
+                    {selectedTasks.map((taskId, index) => {
+                      const task = tasks.find(t => t.id === taskId)
+                      if (!task) return null
+                      
+                      // Calculate sequential deadlines for preview
+                      let previewDate = new Date(multiAssignmentData.start_date)
+                      
+                      // Add durations of all previous tasks
+                      for (let i = 0; i < index; i++) {
+                        const prevTask = tasks.find(t => t.id === selectedTasks[i])
+                        if (prevTask) {
+                          previewDate.setDate(previewDate.getDate() + prevTask.working_duration + 1) // +1 for buffer
+                        }
+                      }
+                      
+                      // Add current task's duration
+                      const deadline = new Date(previewDate)
+                      deadline.setDate(deadline.getDate() + task.working_duration)
+                      
+                      return (
+                        <div key={taskId} className="flex justify-between text-green-600">
+                          <span className="truncate max-w-xs">{task.title}:</span>
+                          <span className="font-medium">{deadline.toLocaleDateString()}</span>
+                        </div>
+                      )
+                    })}
                   </div>
-                )}
+                </div>
+              )}
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">Common Notes for All Tasks</label>
@@ -1512,18 +1845,14 @@ export default function TaskManager() {
                   />
                 </div>
 
-                <div className="bg-yellow-50 p-3 rounded-lg">
-                  <p className="text-xs text-yellow-700">
-                    ⚠️ Each task will have its own deadline based on its individual duration.
-                    {selectedTasks.some(t => {
-                      const task = tasks.find(task => task.id === t)
-                      return task?.use_holiday_calendar
-                    }) && (
-                      <span className="block mt-1">
-                        📅 Tasks with holiday calendar enabled will exclude Sri Lanka public holidays and Poya days.
-                      </span>
-                    )}
-                  </p>
+                <div className="text-xs text-gray-500 mt-2">
+                  <p>⚠️ Tasks will be completed in sequence. Task 2 starts after Task 1's deadline + 1 day buffer.</p>
+                  {selectedTasks.some(t => {
+                    const task = tasks.find(task => task.id === t)
+                    return task?.use_holiday_calendar
+                  }) && (
+                    <p className="mt-1">📅 Tasks with holiday calendar exclude Sri Lanka public holidays and Poya days.</p>
+                  )}
                 </div>
 
                 <div className="flex gap-2 pt-4">
